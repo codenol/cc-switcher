@@ -1,3 +1,7 @@
+// Публичный API задействуют следующие задачи (#4 swap, #6 capture).
+#[allow(dead_code)]
+mod cookies;
+
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     tray::TrayIconBuilder,
