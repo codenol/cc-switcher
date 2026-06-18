@@ -3,7 +3,7 @@
 //! Управляемое состояние — `Mutex<Store>`. Команды для фронта окна настроек,
 //! построение и обновление меню в баре, запуск переключения аккаунта.
 
-use crate::store::{Account, SecretKind, Store, UsageSnapshot};
+use crate::store::{Account, Store, UsageSnapshot};
 use crate::{capture, swap};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -36,8 +36,6 @@ pub struct PendingPrompt(pub Mutex<Option<SwitchPrompt>>);
 pub struct AccountView {
     pub id: String,
     pub display_name: String,
-    pub email: String,
-    pub email_url: String,
     pub has_cookies: bool,
     pub session_expires_utc: Option<i64>,
     pub usage: Option<UsageSnapshot>,
@@ -49,8 +47,6 @@ fn to_view(a: &Account, active_id: Option<&str>) -> AccountView {
     AccountView {
         id: a.id.clone(),
         display_name: a.display_name.clone(),
-        email: a.email.clone(),
-        email_url: a.email_url.clone(),
         has_cookies: sk.is_some(),
         session_expires_utc: sk.map(|c| c.expires_utc),
         usage: a.usage.clone(),
@@ -76,10 +72,6 @@ pub fn list_accounts(state: tauri::State<AppState>) -> Vec<AccountView> {
 pub struct AccountInput {
     pub id: Option<String>,
     pub display_name: String,
-    pub email: String,
-    pub email_url: String,
-    pub password: Option<String>,
-    pub email_password: Option<String>,
 }
 
 #[tauri::command]
@@ -92,31 +84,14 @@ pub fn save_account(app: AppHandle, state: tauri::State<AppState>, input: Accoun
                 let existing = store.get(id).cloned();
                 let mut acc = existing.ok_or_else(|| "аккаунт не найден".to_string())?;
                 acc.display_name = input.display_name.clone();
-                acc.email = input.email.clone();
-                acc.email_url = input.email_url.clone();
                 store.update(acc);
                 id.clone()
             }
-            None => {
-                let acc = Account::new(
-                    input.display_name.clone(),
-                    input.email.clone(),
-                    input.email_url.clone(),
-                );
-                store.add(acc)
-            }
+            None => store.add(Account::new(input.display_name.clone())),
         };
         store.save().map_err(|e| e.to_string())?;
         id
     };
-
-    // секреты — в Keychain (только если переданы непустыми)
-    if let Some(p) = input.password.as_deref().filter(|s| !s.is_empty()) {
-        crate::store::set_secret(&id, SecretKind::Password, p).map_err(|e| e.to_string())?;
-    }
-    if let Some(p) = input.email_password.as_deref().filter(|s| !s.is_empty()) {
-        crate::store::set_secret(&id, SecretKind::EmailPassword, p).map_err(|e| e.to_string())?;
-    }
 
     refresh_tray(&app);
     Ok(id)
@@ -131,21 +106,6 @@ pub fn delete_account(app: AppHandle, state: tauri::State<AppState>, id: String)
     }
     refresh_tray(&app);
     Ok(())
-}
-
-/// Секреты аккаунта для предзаполнения формы редактирования.
-#[derive(Serialize)]
-pub struct AccountSecrets {
-    pub password: Option<String>,
-    pub email_password: Option<String>,
-}
-
-#[tauri::command]
-pub fn get_account_secrets(id: String) -> AccountSecrets {
-    AccountSecrets {
-        password: crate::store::get_secret(&id, SecretKind::Password).unwrap_or(None),
-        email_password: crate::store::get_secret(&id, SecretKind::EmailPassword).unwrap_or(None),
-    }
 }
 
 /// Захватить текущую сессию Claude и привязать к аккаунту (создав при отсутствии id).

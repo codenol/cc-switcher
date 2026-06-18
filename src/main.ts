@@ -11,17 +11,10 @@ interface UsageSnapshot {
 interface AccountView {
   id: string;
   display_name: string;
-  email: string;
-  email_url: string;
   has_cookies: boolean;
   session_expires_utc: number | null;
   usage: UsageSnapshot | null;
   is_active: boolean;
-}
-
-interface AccountSecrets {
-  password: string | null;
-  email_password: string | null;
 }
 
 let accounts: AccountView[] = [];
@@ -29,17 +22,15 @@ let selectedId: string | null = null;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const listEl = $("account-list");
+const tabbarEl = $("tabbar");
+const tabsEl = $("tabs");
 const formEl = $<HTMLFormElement>("account-form");
 const emptyEl = $("empty-state");
 const cookieStatusEl = $("cookie-status");
+const activeBadgeEl = $("active-badge");
 const hintEl = $("form-hint");
 
 const fName = $<HTMLInputElement>("f-name");
-const fEmail = $<HTMLInputElement>("f-email");
-const fPassword = $<HTMLInputElement>("f-password");
-const fEmailPassword = $<HTMLInputElement>("f-email-password");
-const fEmailUrl = $<HTMLInputElement>("f-email-url");
 
 function toast(msg: string) {
   const el = $("toast");
@@ -58,27 +49,34 @@ function chromeTimeToDate(t: number | null): string {
 
 async function refresh() {
   accounts = await invoke<AccountView[]>("list_accounts");
-  renderList();
-  if (selectedId && !accounts.some((a) => a.id === selectedId)) {
+  // выбранный аккаунт мог исчезнуть
+  if (selectedId && selectedId !== "__new__" && !accounts.some((a) => a.id === selectedId)) {
     selectedId = null;
   }
+  // по умолчанию открыть активный (или первый) аккаунт
+  if (!selectedId && accounts.length > 0) {
+    const def = accounts.find((a) => a.is_active) ?? accounts[0];
+    selectAccount(def.id);
+    return;
+  }
+  renderTabs();
   renderForm();
 }
 
-function renderList() {
-  listEl.innerHTML = "";
+function renderTabs() {
+  const hasAccounts = accounts.length > 0;
+  tabbarEl.hidden = !hasAccounts && selectedId !== "__new__";
+  tabsEl.innerHTML = "";
   for (const a of accounts) {
-    const li = document.createElement("li");
-    li.className = "account-item" + (a.id === selectedId ? " selected" : "");
-    li.onclick = () => selectAccount(a.id);
+    const b = document.createElement("button");
+    b.className = "tab" + (a.id === selectedId ? " selected" : "");
+    b.onclick = () => selectAccount(a.id);
     const cookieDot = `<span class="dot ${a.has_cookies ? "ok" : ""}" title="${
       a.has_cookies ? "cookie захвачены" : "cookie не захвачены"
     }"></span>`;
-    const badge = a.is_active ? `<span class="badge">активен</span>` : "";
-    li.innerHTML = `
-      <div class="name">${cookieDot}${escapeHtml(a.display_name)}${badge}</div>
-      <div class="email">${escapeHtml(a.email)}</div>`;
-    listEl.appendChild(li);
+    const live = a.is_active ? `<span class="live" title="активен в Claude"></span>` : "";
+    b.innerHTML = `${cookieDot}${escapeHtml(a.display_name)}${live}`;
+    tabsEl.appendChild(b);
   }
 }
 
@@ -88,14 +86,10 @@ function escapeHtml(s: string): string {
   return d.innerHTML;
 }
 
-async function selectAccount(id: string) {
+function selectAccount(id: string) {
   selectedId = id;
-  renderList();
+  renderTabs();
   renderForm();
-  // подгрузить секреты в форму
-  const secrets = await invoke<AccountSecrets>("get_account_secrets", { id });
-  fPassword.value = secrets.password ?? "";
-  fEmailPassword.value = secrets.email_password ?? "";
 }
 
 function renderForm() {
@@ -104,7 +98,8 @@ function renderForm() {
 
   if (!acc && !isNew) {
     formEl.hidden = true;
-    emptyEl.hidden = false;
+    // центральная кнопка — только когда аккаунтов нет вовсе
+    emptyEl.hidden = accounts.length > 0;
     return;
   }
   formEl.hidden = false;
@@ -112,27 +107,29 @@ function renderForm() {
   hintEl.textContent = "";
 
   fName.value = acc?.display_name ?? "";
-  fEmail.value = acc?.email ?? "";
-  fEmailUrl.value = acc?.email_url ?? "";
-  if (isNew) {
-    fPassword.value = "";
-    fEmailPassword.value = "";
-  }
 
+  // бейдж активности в Claude
+  activeBadgeEl.hidden = !acc?.is_active;
+
+  // статус cookie с цветовым акцентом
+  cookieStatusEl.classList.remove("ok", "warn");
   if (isNew) {
     cookieStatusEl.textContent = "Новый аккаунт — сохраните, затем захватите cookie.";
+    cookieStatusEl.classList.add("warn");
   } else if (acc?.has_cookies) {
-    cookieStatusEl.textContent = `Cookie захвачены · sessionKey действует до ${chromeTimeToDate(
+    cookieStatusEl.textContent = `● Cookie захвачены · действуют до ${chromeTimeToDate(
       acc.session_expires_utc
     )}`;
+    cookieStatusEl.classList.add("ok");
   } else {
-    cookieStatusEl.textContent = "Cookie не захвачены.";
+    cookieStatusEl.textContent = "● Cookie не захвачены";
+    cookieStatusEl.classList.add("warn");
   }
 }
 
 function newAccount() {
   selectedId = "__new__";
-  renderList();
+  renderTabs();
   renderForm();
   fName.focus();
 }
@@ -142,10 +139,6 @@ async function saveAccount(e: Event) {
   const input = {
     id: selectedId === "__new__" ? null : selectedId,
     display_name: fName.value.trim(),
-    email: fEmail.value.trim(),
-    email_url: fEmailUrl.value.trim(),
-    password: fPassword.value,
-    email_password: fEmailPassword.value,
   };
   try {
     const id = await invoke<string>("save_account", { input });
@@ -160,7 +153,7 @@ async function saveAccount(e: Event) {
 async function deleteAccount() {
   if (!selectedId || selectedId === "__new__") return;
   const acc = accounts.find((a) => a.id === selectedId);
-  if (!confirm(`Удалить аккаунт «${acc?.display_name}»? Секреты тоже будут удалены.`)) return;
+  if (!confirm(`Удалить аккаунт «${acc?.display_name}»?`)) return;
   await invoke("delete_account", { id: selectedId });
   selectedId = null;
   await refresh();
@@ -184,6 +177,7 @@ async function captureAccount() {
 
 window.addEventListener("DOMContentLoaded", () => {
   $("btn-new").onclick = newAccount;
+  $("btn-first").onclick = newAccount;
   $("btn-delete").onclick = deleteAccount;
   $("btn-capture").onclick = captureAccount;
   formEl.addEventListener("submit", saveAccount);

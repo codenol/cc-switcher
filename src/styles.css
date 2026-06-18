@@ -12,10 +12,14 @@
     color: #f5f5f7;
     background-color: #1e1e1e;
   }
-  .sidebar { background: #232325; border-color: #333; }
+  .tabbar { border-color: #333; }
+  .tab { background: #2c2c2e; }
+  .tab:hover { background: #38383a; }
   input { background: #2c2c2e; color: #f5f5f7; border-color: #444; }
-  .account-item:hover { background: #2c2c2e; }
-  .account-item.selected { background: #0a84ff22; }
+  .add-btn { border-color: #555; }
+  .badge-active { color: #4cd267; }
+  .cookie-status.ok { color: #4cd267; }
+  .cookie-status.warn { color: #e0a300; }
 }
 
 * { box-sizing: border-box; }
@@ -25,66 +29,73 @@ body { margin: 0; overflow: hidden; }
 [hidden] { display: none !important; }
 
 .app {
-  display: grid;
-  grid-template-columns: 220px 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
 }
 
-/* Боковая панель */
-.sidebar {
-  background: #ececee;
-  border-right: 1px solid #ddd;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.sidebar-head {
+/* Строка табов: аккаунты + добавить */
+.tabbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.7;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #ddd;
 }
-.icon-btn {
-  border: none;
-  background: transparent;
-  font-size: 18px;
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: #e8e8ea;
   cursor: pointer;
+  white-space: nowrap;
+  font-size: 13px;
+  font-family: inherit;
   color: inherit;
-  line-height: 1;
-  padding: 0 4px;
 }
-.account-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
-.account-item {
-  padding: 9px 14px;
+.tab:hover { background: #dcdce0; }
+.tab.selected { background: #0a84ff; color: #fff; }
+.tab.selected .dot { box-shadow: 0 0 0 1.5px #fff; }
+.add-btn {
+  white-space: nowrap;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px dashed #bbb;
+  background: transparent;
   cursor: pointer;
-  border-bottom: 1px solid transparent;
+  font-size: 13px;
+  font-family: inherit;
+  color: inherit;
+  opacity: 0.8;
 }
-.account-item:hover { background: #e0e0e3; }
-.account-item.selected { background: #0a84ff1a; }
-.account-item .name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.account-item .email { font-size: 11px; opacity: 0.6; }
-.badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: #34c759;
-  color: white;
-}
+.add-btn:hover { background: rgba(128,128,128,0.12); opacity: 1; }
 .dot {
   width: 7px; height: 7px; border-radius: 50%;
-  background: #c0c0c0; display: inline-block;
+  background: #c0c0c0; display: inline-block; flex: none;
 }
 .dot.ok { background: #34c759; }
+/* Зелёная метка активного аккаунта в табе */
+.tab .live {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #34c759; display: inline-block; flex: none;
+  box-shadow: 0 0 0 2px rgba(52,199,89,0.25);
+}
+.tab.selected .live { box-shadow: 0 0 0 2px rgba(255,255,255,0.4); }
 
 /* Редактор */
-.editor { padding: 22px 26px; overflow-y: auto; }
-.form { display: flex; flex-direction: column; gap: 12px; max-width: 420px; }
-.form label { display: flex; flex-direction: column; gap: 4px; font-weight: 500; }
+.editor { flex: 1; padding: 18px 24px; overflow-y: auto; }
+.form { display: flex; flex-direction: column; gap: 10px; max-width: 480px; margin: 0 auto; }
+.form label { display: flex; flex-direction: column; gap: 3px; font-weight: 500; }
 input {
   padding: 7px 9px;
   border: 1px solid #ccc;
@@ -94,8 +105,25 @@ input {
 }
 input:focus { outline: 2px solid #0a84ff66; border-color: #0a84ff; }
 
-.cookie-status { font-size: 12px; opacity: 0.8; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+/* Статус-блок: активность + cookie */
+.status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 20px; }
+.badge-active {
+  font-size: 11px; font-weight: 600;
+  color: #2a9d4a; background: rgba(52,199,89,0.14);
+  padding: 2px 9px; border-radius: 999px;
+}
+.cookie-status { font-size: 12px; opacity: 0.85; }
+.cookie-status.ok { color: #2a9d4a; opacity: 1; }
+.cookie-status.warn { color: #b07b00; opacity: 1; }
+.actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.ghost-danger {
+  margin-left: auto;
+  color: #ff3b30;
+  border-color: transparent;
+  background: transparent;
+  opacity: 0.75;
+}
+.ghost-danger:hover { background: #ff3b3010; opacity: 1; }
 button {
   padding: 7px 12px;
   border-radius: 6px;
@@ -112,7 +140,16 @@ button.danger { color: #ff3b30; border-color: #ff3b3055; margin-left: auto; }
 button.danger:hover { background: #ff3b3010; }
 
 .hint { font-size: 12px; opacity: 0.7; min-height: 1em; margin: 4px 0 0; }
-.empty-state { color: inherit; max-width: 380px; }
+.empty-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+}
+button.big { padding: 11px 22px; font-size: 14px; border-radius: 8px; }
 .muted { opacity: 0.55; }
 
 .toast {
