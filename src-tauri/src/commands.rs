@@ -253,8 +253,11 @@ pub fn trigger_switch(app: AppHandle, id: String) {
     let app2 = app.clone();
     std::thread::spawn(move || {
         let state = app2.state::<AppState>();
+        // Уходящий (сейчас активный) аккаунт — его живую сессию освежим после свапа.
+        let outgoing_id;
         let cookies = {
             let store = state.0.lock().unwrap();
+            outgoing_id = store.active_id.clone();
             match store.active_id.as_deref() == Some(id.as_str()) {
                 true => {
                     let _ = app2.emit("switch-progress", "Уже активен");
@@ -277,9 +280,19 @@ pub fn trigger_switch(app: AppHandle, id: String) {
         });
 
         match res {
-            Ok(()) => {
+            Ok(outgoing) => {
                 {
                     let mut store = state.0.lock().unwrap();
+                    // Освежить снимок уходящего аккаунта его живой (возможно
+                    // отротированной) сессией — иначе при возврате на него
+                    // запишется протухший токен → Get started.
+                    if let Some(out_id) = outgoing_id.as_deref() {
+                        if out_id != id && outgoing.iter().any(|c| c.name == "sessionKey") {
+                            if let Some(acc) = store.get_mut(out_id) {
+                                acc.cookies = outgoing;
+                            }
+                        }
+                    }
                     store.set_active(&id);
                     let _ = store.save();
                 }
