@@ -1,6 +1,8 @@
-// Публичный API задействуют следующие задачи (#6 capture, #9 меню).
+// Публичный API задействуют следующие задачи (#6 capture, #9 меню, #10 настройки).
 #[allow(dead_code)]
 mod cookies;
+#[allow(dead_code)]
+mod store;
 #[allow(dead_code)]
 mod swap;
 

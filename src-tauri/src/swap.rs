@@ -137,11 +137,7 @@ fn cleanup_backups(pairs: &[(PathBuf, PathBuf)]) {
 ///
 /// `progress` вызывается на каждом этапе (для событий в UI). Claude должен быть
 /// закрыт по ходу выполнения — функция делает это сама.
-pub fn switch_to<F: Fn(Stage)>(
-    key: &[u8; 16],
-    cookies: &[SessionCookie],
-    progress: F,
-) -> Result<()> {
+pub fn switch_to<F: Fn(Stage)>(cookies: &[SessionCookie], progress: F) -> Result<()> {
     if cookies.is_empty() {
         bail!("нет cookie для переключения");
     }
@@ -157,7 +153,7 @@ pub fn switch_to<F: Fn(Stage)>(
     let backups = backup_cookies(&db)?;
 
     progress(Stage::Writing);
-    if let Err(e) = cookies::write_session_cookies(&db, key, cookies) {
+    if let Err(e) = cookies::write_session_cookies(&db, cookies) {
         // Откат и выход
         let _ = restore_cookies(&backups);
         cleanup_backups(&backups);
