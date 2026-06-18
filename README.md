@@ -57,12 +57,15 @@ cc-switcher живёт в верхней панели мака — там же, 
 
 ```bash
 npm install
-npm run tauri build
+npm run tauri build   # соберёт .app
+npm run dmg           # упакует .dmg (необязательно)
 ```
 
 Готовый `.app` появится в
 `src-tauri/target/release/bundle/macos/cc-switcher.app`,
-а `.dmg` — в `src-tauri/target/release/bundle/dmg/`.
+а `.dmg` (после `npm run dmg`) — в `src-tauri/target/release/bundle/dmg/`.
+
+> DMG собирается отдельным шагом (`npm run dmg` → `scripts/package-dmg.sh`, через `hdiutil`): штатный dmg-бандлер Tauri раскладывает окно через Finder/AppleScript и нестабилен в фоновых/CI-сборках.
 
 ### Подпись и Gatekeeper
 
