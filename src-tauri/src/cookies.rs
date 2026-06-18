@@ -109,13 +109,15 @@ pub fn value_from_plaintext(plaintext: &[u8]) -> Result<String> {
 
 // ───────────────────────── Чтение / запись БД ─────────────────────────
 
-/// Одна строка cookie со всеми колонками БД. `plaintext_b64` — расшифрованное
-/// значение (с префиксом host), хранится у нас в base64; `encrypted_value`
-/// генерируется заново при записи.
+/// Одна строка cookie со всеми колонками БД. `encrypted_b64` — это родной
+/// Chromium-блоб `v10…` (base64) — источник истины, зашифрован ключом машины.
+/// Ключ safeStorage один на всю машину, поэтому блоб можно переносить между
+/// аккаунтами как есть, без перешифровки. Расшифровка нужна только чтобы
+/// получить значение (`value`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionCookie {
     pub name: String,
-    pub plaintext_b64: String,
+    pub encrypted_b64: String,
     pub creation_utc: i64,
     pub host_key: String,
     pub top_frame_site_key: String,
@@ -136,16 +138,19 @@ pub struct SessionCookie {
 }
 
 impl SessionCookie {
-    /// Чистое значение (например, сам `sk-ant-…` для sessionKey).
-    pub fn value(&self) -> Result<String> {
-        let pt = B64.decode(&self.plaintext_b64).context("plaintext_b64 не base64")?;
+    /// Чистое значение cookie (например, сам `sk-ant-…` для sessionKey).
+    /// Требует ключ машины — расшифровывает блоб и отрезает префикс host.
+    pub fn value(&self, key: &[u8; 16]) -> Result<String> {
+        let enc = B64.decode(&self.encrypted_b64).context("encrypted_b64 не base64")?;
+        let pt = decrypt(&enc, key)?;
         value_from_plaintext(&pt)
     }
 }
 
-/// Прочитать и расшифровать cookie сессии из базы Claude.
+/// Прочитать cookie сессии из базы Claude в виде зашифрованных блобов.
+/// Ключ не нужен: блоб хранится и переносится как есть.
 /// Возвращает только реально присутствующие из [`SESSION_COOKIE_NAMES`].
-pub fn read_session_cookies(db_path: &PathBuf, key: &[u8; 16]) -> Result<Vec<SessionCookie>> {
+pub fn read_session_cookies(db_path: &PathBuf) -> Result<Vec<SessionCookie>> {
     let conn = Connection::open_with_flags(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -162,29 +167,23 @@ pub fn read_session_cookies(db_path: &PathBuf, key: &[u8; 16]) -> Result<Vec<Ses
                  has_cross_site_ancestor \
                  FROM cookies WHERE name = ?1 AND host_key = ?2",
                 params![name, HOST],
-                |r| {
-                    let enc: Vec<u8> = r.get(4)?;
-                    Ok((enc, row_to_cookie(r)))
-                },
+                row_to_cookie,
             )
             .ok();
 
-        if let Some((enc, partial)) = row {
-            let mut c = partial?;
-            let pt = decrypt(&enc, key)
-                .with_context(|| format!("не удалось расшифровать cookie {name}"))?;
-            c.plaintext_b64 = B64.encode(pt);
+        if let Some(c) = row {
             out.push(c);
         }
     }
     Ok(out)
 }
 
-/// Собрать [`SessionCookie`] из строки выборки (без plaintext — он ставится отдельно).
+/// Собрать [`SessionCookie`] из строки выборки (блоб encrypted_value → base64).
 fn row_to_cookie(r: &rusqlite::Row) -> rusqlite::Result<SessionCookie> {
+    let enc: Vec<u8> = r.get(4)?;
     Ok(SessionCookie {
         name: r.get(3)?,
-        plaintext_b64: String::new(),
+        encrypted_b64: B64.encode(enc),
         creation_utc: r.get(0)?,
         host_key: r.get(1)?,
         top_frame_site_key: r.get(2)?,
@@ -205,19 +204,15 @@ fn row_to_cookie(r: &rusqlite::Row) -> rusqlite::Result<SessionCookie> {
     })
 }
 
-/// Записать (UPSERT) cookie сессии в базу Claude, перешифровав значения.
+/// Записать (UPSERT) cookie сессии в базу Claude. Блоб `encrypted_b64`
+/// пишется как есть — перешифровка не нужна (ключ машины общий).
 /// Claude должен быть закрыт. `value` хранится пустым — данные в `encrypted_value`.
-pub fn write_session_cookies(
-    db_path: &PathBuf,
-    key: &[u8; 16],
-    cookies: &[SessionCookie],
-) -> Result<()> {
+pub fn write_session_cookies(db_path: &PathBuf, cookies: &[SessionCookie]) -> Result<()> {
     let mut conn = Connection::open(db_path)
         .with_context(|| format!("не удалось открыть на запись {}", db_path.display()))?;
     let tx = conn.transaction()?;
     for c in cookies {
-        let pt = B64.decode(&c.plaintext_b64).context("plaintext_b64 не base64")?;
-        let enc = encrypt(&pt, key);
+        let enc = B64.decode(&c.encrypted_b64).context("encrypted_b64 не base64")?;
         tx.execute(
             "INSERT OR REPLACE INTO cookies \
              (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, \
@@ -262,18 +257,18 @@ mod tests {
     fn real_read_and_roundtrip() {
         let key = load_key().expect("ключ из Keychain");
         let path = claude_cookies_path();
-        let cookies = read_session_cookies(&path, &key).expect("чтение cookie");
+        let cookies = read_session_cookies(&path).expect("чтение cookie");
         assert!(!cookies.is_empty(), "не найдено ни одной session-cookie");
 
         let sk = cookies.iter().find(|c| c.name == "sessionKey").expect("есть sessionKey");
-        let val = sk.value().expect("значение sessionKey");
+        let val = sk.value(&key).expect("значение sessionKey");
         println!("sessionKey начинается с: {}", &val[..val.len().min(12)]);
         assert!(val.starts_with("sk-ant"), "значение не похоже на sessionKey: {val:.12}");
 
-        // round-trip: перешифровать тем же ключом и расшифровать обратно
-        let pt = B64.decode(&sk.plaintext_b64).unwrap();
-        let re = decrypt(&encrypt(&pt, &key), &key).unwrap();
-        assert_eq!(re, pt, "round-trip не совпал");
-        println!("OK: прочитано {} cookie, round-trip совпал", cookies.len());
+        // round-trip: блоб расшифровывается в осмысленное значение
+        let enc = B64.decode(&sk.encrypted_b64).unwrap();
+        let re = decrypt(&enc, &key).unwrap();
+        assert_eq!(&re[..32], &host_prefix(HOST), "префикс host не совпал");
+        println!("OK: прочитано {} cookie, значение валидно", cookies.len());
     }
 }
