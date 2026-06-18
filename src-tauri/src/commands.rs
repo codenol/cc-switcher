@@ -307,27 +307,39 @@ pub fn build_menu(app: &AppHandle, store: &Store) -> tauri::Result<tauri::menu::
                 .build(app)?,
         );
     } else {
-        // сортировка по времени сброса (заданные раньше → выше, без времени → в конец)
-        let mut accs: Vec<&Account> = store.accounts.iter().collect();
-        accs.sort_by(|x, y| {
-            let kx = x.usage.as_ref().and_then(|u| u.reset_at);
-            let ky = y.usage.as_ref().and_then(|u| u.reset_at);
-            match (kx, ky) {
-                (Some(a), Some(b)) => a.cmp(&b),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => x.display_name.cmp(&y.display_name),
+        // Активный аккаунт в список не попадает: мы и так в нём, переключиться нельзя.
+        let mut accs: Vec<&Account> = store
+            .accounts
+            .iter()
+            .filter(|a| store.active_id.as_deref() != Some(a.id.as_str()))
+            .collect();
+
+        if accs.is_empty() {
+            b = b.item(
+                &MenuItemBuilder::with_id("noop", "Нет других аккаунтов")
+                    .enabled(false)
+                    .build(app)?,
+            );
+        } else {
+            // сортировка по времени сброса (заданные раньше → выше, без времени → в конец)
+            accs.sort_by(|x, y| {
+                let kx = x.usage.as_ref().and_then(|u| u.reset_at);
+                let ky = y.usage.as_ref().and_then(|u| u.reset_at);
+                match (kx, ky) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => x.display_name.cmp(&y.display_name),
+                }
+            });
+            for a in accs {
+                let time = a.usage.as_ref().and_then(|u| u.reset_label.clone());
+                let label = match time {
+                    Some(t) => format!("{t} – {}", a.display_name),
+                    None => a.display_name.clone(),
+                };
+                b = b.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
             }
-        });
-        for a in accs {
-            let active = store.active_id.as_deref() == Some(a.id.as_str());
-            let mark = if active { "✓ " } else { "" };
-            let time = a.usage.as_ref().and_then(|u| u.reset_label.clone());
-            let label = match time {
-                Some(t) => format!("{mark}{t} – {}", a.display_name),
-                None => format!("{mark}{}", a.display_name),
-            };
-            b = b.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
         }
     }
 
