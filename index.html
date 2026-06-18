@@ -1,56 +1,14 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>cc-switcher — Настройки</title>
-    <script type="module" src="/src/main.ts" defer></script>
+    <script type="module" src="/src/main.tsx" defer></script>
   </head>
 
   <body>
-    <div class="app">
-      <!-- Табы аккаунтов + добавить (в одной строке) -->
-      <header id="tabbar" class="tabbar" hidden>
-        <div id="tabs" class="tabs"></div>
-        <button id="btn-new" class="add-btn" title="Добавить аккаунт">＋ Аккаунт</button>
-      </header>
-
-      <main class="editor">
-        <!-- Пусто: кнопка по центру -->
-        <div id="empty-state" class="empty-state" hidden>
-          <p class="muted">Аккаунтов пока нет.</p>
-          <button id="btn-first" type="button" class="primary big">Добавить первый аккаунт</button>
-        </div>
-
-        <!-- Форма редактирования -->
-        <form id="account-form" class="form" hidden>
-          <!-- Статус: активность в Claude + cookie -->
-          <div class="status">
-            <span id="active-badge" class="badge-active" hidden>● Активен в Claude</span>
-            <span id="cookie-status" class="cookie-status"></span>
-          </div>
-
-          <label>
-            Имя
-            <input id="f-name" type="text" placeholder="Например, Аня (дневная смена)" required />
-          </label>
-          <label id="reset-row">
-            Время ресета сессии
-            <input id="f-reset" type="time" />
-          </label>
-
-          <p class="hint" id="form-hint"></p>
-
-          <div class="actions">
-            <button type="submit" class="primary">Сохранить</button>
-            <button type="button" id="btn-capture">Захватить текущий аккаунт</button>
-            <button type="button" id="btn-delete" class="ghost-danger">Удалить</button>
-          </div>
-        </form>
-      </main>
-    </div>
-
-    <div id="toast" class="toast" hidden></div>
+    <div id="root"></div>
   </body>
 </html>
