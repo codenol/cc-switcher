@@ -1,27 +1,14 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>cc-switcher — переключение</title>
-    <script type="module" src="/src/prompt.ts" defer></script>
+    <script type="module" src="/src/prompt.tsx" defer></script>
   </head>
 
   <body>
-    <!-- Окно-промпт: ввод времени ресета вокруг переключения (#7 v2) -->
-    <div id="prompt-view" class="prompt">
-      <h1 id="p-title">Переключение</h1>
-      <p id="p-msg" class="p-msg"></p>
-      <label id="p-time-row" class="p-time-row" hidden>
-        Время ресета
-        <input id="p-time" type="time" />
-      </label>
-      <p id="p-status" class="p-status"></p>
-      <div class="p-actions">
-        <button id="p-secondary" type="button"></button>
-        <button id="p-primary" type="button" class="primary"></button>
-      </div>
-    </div>
+    <div id="root"></div>
   </body>
 </html>
