@@ -9,72 +9,45 @@
   </head>
 
   <body>
-    <!-- Окно-промпт: ввод времени ресета вокруг переключения (#7 v2) -->
-    <div id="prompt-view" class="prompt" hidden>
-      <h1 id="p-title">Переключение</h1>
-      <p id="p-msg" class="p-msg"></p>
-      <label id="p-time-row" class="p-time-row">
-        Время ресета
-        <input id="p-time" type="time" />
-      </label>
-      <p id="p-status" class="p-status"></p>
-      <div class="p-actions">
-        <button id="p-secondary" type="button"></button>
-        <button id="p-primary" type="button" class="primary"></button>
-      </div>
-    </div>
-
     <div class="app">
-      <!-- Список аккаунтов -->
-      <aside class="sidebar">
-        <div class="sidebar-head">
-          <span>Аккаунты</span>
-          <button id="btn-new" class="icon-btn" title="Добавить аккаунт">＋</button>
-        </div>
-        <ul id="account-list" class="account-list"></ul>
-      </aside>
+      <!-- Табы аккаунтов + добавить (в одной строке) -->
+      <header id="tabbar" class="tabbar" hidden>
+        <div id="tabs" class="tabs"></div>
+        <button id="btn-new" class="add-btn" title="Добавить аккаунт">＋ Аккаунт</button>
+      </header>
 
-      <!-- Форма редактирования -->
       <main class="editor">
+        <!-- Пусто: кнопка по центру -->
+        <div id="empty-state" class="empty-state" hidden>
+          <p class="muted">Аккаунтов пока нет.</p>
+          <button id="btn-first" type="button" class="primary big">Добавить первый аккаунт</button>
+        </div>
+
+        <!-- Форма редактирования -->
         <form id="account-form" class="form" hidden>
+          <!-- Статус: активность в Claude + cookie -->
+          <div class="status">
+            <span id="active-badge" class="badge-active" hidden>● Активен в Claude</span>
+            <span id="cookie-status" class="cookie-status"></span>
+          </div>
+
           <label>
             Имя
             <input id="f-name" type="text" placeholder="Например, Аня (дневная смена)" required />
           </label>
-          <label>
-            Логин · почта
-            <input id="f-email" type="email" placeholder="user@example.com" required />
-          </label>
-          <label>
-            Пароль
-            <input id="f-password" type="password" placeholder="••••••••" autocomplete="off" />
-          </label>
-          <label>
-            Пароль почты
-            <input id="f-email-password" type="password" placeholder="••••••••" autocomplete="off" />
-          </label>
-          <label>
-            Ссылка на почтовый сервис
-            <input id="f-email-url" type="url" placeholder="https://mail.example.com" />
+          <label id="reset-row">
+            Время ресета сессии
+            <input id="f-reset" type="time" />
           </label>
 
-          <div class="cookie-status" id="cookie-status"></div>
+          <p class="hint" id="form-hint"></p>
 
           <div class="actions">
             <button type="submit" class="primary">Сохранить</button>
             <button type="button" id="btn-capture">Захватить текущий аккаунт</button>
-            <button type="button" id="btn-delete" class="danger">Удалить</button>
+            <button type="button" id="btn-delete" class="ghost-danger">Удалить</button>
           </div>
-          <p class="hint" id="form-hint"></p>
         </form>
-
-        <div id="empty-state" class="empty-state">
-          <p>Выберите аккаунт слева или добавьте новый.</p>
-          <p class="muted">
-            Чтобы захватить аккаунт: войдите в него в Claude Desktop, затем нажмите
-            «Захватить текущий аккаунт».
-          </p>
-        </div>
       </main>
     </div>
 

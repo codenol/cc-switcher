@@ -76,10 +76,10 @@ pub fn run() {
             commands::list_accounts,
             commands::save_account,
             commands::delete_account,
-            commands::get_account_secrets,
             commands::capture_account,
             commands::switch_account,
             commands::set_reset_time,
+            commands::clear_reset_time,
             commands::get_pending_prompt,
         ])
         .setup(|app| {

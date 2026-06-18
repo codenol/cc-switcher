@@ -1,17 +1,15 @@
-//! Хранилище аккаунтов (#5): модель, CRUD, секреты в Keychain, снимки usage.
+//! Хранилище аккаунтов (#5): модель, CRUD, снимки usage.
 //!
-//! Несекретные данные (аккаунты, cookie-блобы, снимок usage) — в JSON
+//! Данные (аккаунты, cookie-блобы, снимок usage) — в JSON
 //! `~/Library/Application Support/cc-switcher/accounts.json`.
-//! Пароли и пароли почты — только в Keychain (service «cc-switcher»),
-//! в JSON их нет. Cookie лежат как зашифрованные блобы (см. [`crate::cookies`]).
+//! Cookie лежат как зашифрованные блобы (см. [`crate::cookies`]).
+//! Логины/пароли не хранятся: переключение работает только на cookie-swap.
 
 use crate::cookies::SessionCookie;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const KEYCHAIN_SERVICE: &str = "cc-switcher";
 
 /// Снимок остатка сессии аккаунта (момент последнего выхода/опроса).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -27,31 +25,25 @@ pub struct UsageSnapshot {
     pub captured_at: i64,
 }
 
-/// Аккаунт. Секреты (пароли) здесь не хранятся — они в Keychain.
+/// Аккаунт: ярлык + захваченная сессия + время ресета.
+/// Переключение работает только на cookie-swap; логины/пароли не нужны.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
     pub display_name: String,
-    /// Логин — почта.
-    pub email: String,
-    /// Ссылка на почтовый сервис (для ручного релогина).
-    #[serde(default)]
-    pub email_url: String,
     /// Зашифрованные cookie сессии (блобы v10).
     #[serde(default)]
     pub cookies: Vec<SessionCookie>,
-    /// Последний известный снимок usage.
+    /// Последний известный снимок usage (время ресета).
     #[serde(default)]
     pub usage: Option<UsageSnapshot>,
 }
 
 impl Account {
-    pub fn new(display_name: String, email: String, email_url: String) -> Self {
+    pub fn new(display_name: String) -> Self {
         Account {
             id: uuid::Uuid::new_v4().to_string(),
             display_name,
-            email,
-            email_url,
             cookies: Vec::new(),
             usage: None,
         }
@@ -143,19 +135,14 @@ impl Store {
         }
     }
 
-    /// Удалить аккаунт и его секреты из Keychain.
+    /// Удалить аккаунт.
     pub fn delete(&mut self, id: &str) -> bool {
         let before = self.accounts.len();
         self.accounts.retain(|a| a.id != id);
         if self.active_id.as_deref() == Some(id) {
             self.active_id = None;
         }
-        let removed = self.accounts.len() != before;
-        if removed {
-            let _ = delete_secret(id, SecretKind::Password);
-            let _ = delete_secret(id, SecretKind::EmailPassword);
-        }
-        removed
+        self.accounts.len() != before
     }
 
     pub fn set_active(&mut self, id: &str) {
@@ -165,73 +152,6 @@ impl Store {
     pub fn active(&self) -> Option<&Account> {
         self.active_id.as_deref().and_then(|id| self.get(id))
     }
-}
-
-// ───────────────────────── Секреты в Keychain ─────────────────────────
-
-#[derive(Debug, Clone, Copy)]
-pub enum SecretKind {
-    Password,
-    EmailPassword,
-}
-
-impl SecretKind {
-    fn suffix(self) -> &'static str {
-        match self {
-            SecretKind::Password => "password",
-            SecretKind::EmailPassword => "email_password",
-        }
-    }
-}
-
-fn kc_account(account_id: &str, kind: SecretKind) -> String {
-    format!("{account_id}:{}", kind.suffix())
-}
-
-/// Сохранить секрет аккаунта в Keychain.
-#[cfg(target_os = "macos")]
-pub fn set_secret(account_id: &str, kind: SecretKind, secret: &str) -> Result<()> {
-    security_framework::passwords::set_generic_password(
-        KEYCHAIN_SERVICE,
-        &kc_account(account_id, kind),
-        secret.as_bytes(),
-    )
-    .context("не удалось записать секрет в Keychain")
-}
-
-/// Прочитать секрет аккаунта из Keychain (None, если не задан).
-#[cfg(target_os = "macos")]
-pub fn get_secret(account_id: &str, kind: SecretKind) -> Result<Option<String>> {
-    match security_framework::passwords::get_generic_password(
-        KEYCHAIN_SERVICE,
-        &kc_account(account_id, kind),
-    ) {
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(_) => Ok(None),
-    }
-}
-
-/// Удалить секрет аккаунта из Keychain.
-#[cfg(target_os = "macos")]
-pub fn delete_secret(account_id: &str, kind: SecretKind) -> Result<()> {
-    let _ = security_framework::passwords::delete_generic_password(
-        KEYCHAIN_SERVICE,
-        &kc_account(account_id, kind),
-    );
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn set_secret(_: &str, _: SecretKind, _: &str) -> Result<()> {
-    anyhow::bail!("Keychain доступен только на macOS")
-}
-#[cfg(not(target_os = "macos"))]
-pub fn get_secret(_: &str, _: SecretKind) -> Result<Option<String>> {
-    Ok(None)
-}
-#[cfg(not(target_os = "macos"))]
-pub fn delete_secret(_: &str, _: SecretKind) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -252,18 +172,14 @@ mod tests {
             let mut store = Store::load().unwrap();
             assert!(store.accounts.is_empty());
 
-            let id = store.add(Account::new(
-                "Аня".into(),
-                "anya@example.com".into(),
-                "https://mail.example.com".into(),
-            ));
+            let id = store.add(Account::new("Аня".into()));
             store.set_active(&id);
             store.save().unwrap();
 
             // перечитали с диска
             let mut reloaded = Store::load().unwrap();
             assert_eq!(reloaded.accounts.len(), 1);
-            assert_eq!(reloaded.active().unwrap().email, "anya@example.com");
+            assert_eq!(reloaded.active().unwrap().display_name, "Аня");
 
             // update
             let mut acc = reloaded.get(&id).unwrap().clone();
@@ -281,20 +197,5 @@ mod tests {
             assert!(reloaded.active_id.is_none());
             assert!(reloaded.accounts.is_empty());
         });
-    }
-
-    /// Боевой тест Keychain (пишет/читает/удаляет временный секрет). Запуск:
-    ///   cargo test --manifest-path src-tauri/Cargo.toml store::tests::secret_ -- --ignored
-    #[test]
-    #[ignore]
-    fn secret_roundtrip_keychain() {
-        let id = format!("test-{}", uuid::Uuid::new_v4());
-        set_secret(&id, SecretKind::Password, "hunter2").unwrap();
-        assert_eq!(
-            get_secret(&id, SecretKind::Password).unwrap().as_deref(),
-            Some("hunter2")
-        );
-        delete_secret(&id, SecretKind::Password).unwrap();
-        assert!(get_secret(&id, SecretKind::Password).unwrap().is_none());
     }
 }

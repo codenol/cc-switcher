@@ -1,8 +1,5 @@
 // Окно настроек: визуальный CRUD аккаунтов (#10).
-// Это же окно в режиме `#prompt` — диалог ввода времени ресета (#7 v2).
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface UsageSnapshot {
   percent_remaining: number | null;
@@ -14,17 +11,10 @@ interface UsageSnapshot {
 interface AccountView {
   id: string;
   display_name: string;
-  email: string;
-  email_url: string;
   has_cookies: boolean;
   session_expires_utc: number | null;
   usage: UsageSnapshot | null;
   is_active: boolean;
-}
-
-interface AccountSecrets {
-  password: string | null;
-  email_password: string | null;
 }
 
 let accounts: AccountView[] = [];
@@ -32,17 +22,28 @@ let selectedId: string | null = null;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const listEl = $("account-list");
+const tabbarEl = $("tabbar");
+const tabsEl = $("tabs");
 const formEl = $<HTMLFormElement>("account-form");
 const emptyEl = $("empty-state");
 const cookieStatusEl = $("cookie-status");
+const activeBadgeEl = $("active-badge");
 const hintEl = $("form-hint");
 
 const fName = $<HTMLInputElement>("f-name");
-const fEmail = $<HTMLInputElement>("f-email");
-const fPassword = $<HTMLInputElement>("f-password");
-const fEmailPassword = $<HTMLInputElement>("f-email-password");
-const fEmailUrl = $<HTMLInputElement>("f-email-url");
+const fReset = $<HTMLInputElement>("f-reset");
+
+// «HH:MM» (локальное) → ближайшая будущая unix-метка + нормализованная подпись.
+function computeReset(timeStr: string): { reset_at: number; label: string } | null {
+  if (!timeStr) return null;
+  const [h, m] = timeStr.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return { reset_at: Math.floor(d.getTime() / 1000), label: `${pad(h)}:${pad(m)}` };
+}
 
 function toast(msg: string) {
   const el = $("toast");
@@ -61,27 +62,34 @@ function chromeTimeToDate(t: number | null): string {
 
 async function refresh() {
   accounts = await invoke<AccountView[]>("list_accounts");
-  renderList();
-  if (selectedId && !accounts.some((a) => a.id === selectedId)) {
+  // выбранный аккаунт мог исчезнуть
+  if (selectedId && selectedId !== "__new__" && !accounts.some((a) => a.id === selectedId)) {
     selectedId = null;
   }
+  // по умолчанию открыть активный (или первый) аккаунт
+  if (!selectedId && accounts.length > 0) {
+    const def = accounts.find((a) => a.is_active) ?? accounts[0];
+    selectAccount(def.id);
+    return;
+  }
+  renderTabs();
   renderForm();
 }
 
-function renderList() {
-  listEl.innerHTML = "";
+function renderTabs() {
+  const hasAccounts = accounts.length > 0;
+  tabbarEl.hidden = !hasAccounts && selectedId !== "__new__";
+  tabsEl.innerHTML = "";
   for (const a of accounts) {
-    const li = document.createElement("li");
-    li.className = "account-item" + (a.id === selectedId ? " selected" : "");
-    li.onclick = () => selectAccount(a.id);
+    const b = document.createElement("button");
+    b.className = "tab" + (a.id === selectedId ? " selected" : "");
+    b.onclick = () => selectAccount(a.id);
     const cookieDot = `<span class="dot ${a.has_cookies ? "ok" : ""}" title="${
       a.has_cookies ? "cookie захвачены" : "cookie не захвачены"
     }"></span>`;
-    const badge = a.is_active ? `<span class="badge">активен</span>` : "";
-    li.innerHTML = `
-      <div class="name">${cookieDot}${escapeHtml(a.display_name)}${badge}</div>
-      <div class="email">${escapeHtml(a.email)}</div>`;
-    listEl.appendChild(li);
+    const live = a.is_active ? `<span class="live" title="активен в Claude"></span>` : "";
+    b.innerHTML = `${cookieDot}${escapeHtml(a.display_name)}${live}`;
+    tabsEl.appendChild(b);
   }
 }
 
@@ -91,14 +99,10 @@ function escapeHtml(s: string): string {
   return d.innerHTML;
 }
 
-async function selectAccount(id: string) {
+function selectAccount(id: string) {
   selectedId = id;
-  renderList();
+  renderTabs();
   renderForm();
-  // подгрузить секреты в форму
-  const secrets = await invoke<AccountSecrets>("get_account_secrets", { id });
-  fPassword.value = secrets.password ?? "";
-  fEmailPassword.value = secrets.email_password ?? "";
 }
 
 function renderForm() {
@@ -107,7 +111,8 @@ function renderForm() {
 
   if (!acc && !isNew) {
     formEl.hidden = true;
-    emptyEl.hidden = false;
+    // центральная кнопка — только когда аккаунтов нет вовсе
+    emptyEl.hidden = accounts.length > 0;
     return;
   }
   formEl.hidden = false;
@@ -115,27 +120,30 @@ function renderForm() {
   hintEl.textContent = "";
 
   fName.value = acc?.display_name ?? "";
-  fEmail.value = acc?.email ?? "";
-  fEmailUrl.value = acc?.email_url ?? "";
-  if (isNew) {
-    fPassword.value = "";
-    fEmailPassword.value = "";
-  }
+  fReset.value = acc?.usage?.reset_label ?? ""; // необязательное
 
+  // бейдж активности в Claude
+  activeBadgeEl.hidden = !acc?.is_active;
+
+  // статус cookie с цветовым акцентом
+  cookieStatusEl.classList.remove("ok", "warn");
   if (isNew) {
     cookieStatusEl.textContent = "Новый аккаунт — сохраните, затем захватите cookie.";
+    cookieStatusEl.classList.add("warn");
   } else if (acc?.has_cookies) {
-    cookieStatusEl.textContent = `Cookie захвачены · sessionKey действует до ${chromeTimeToDate(
+    cookieStatusEl.textContent = `● Cookie захвачены · действуют до ${chromeTimeToDate(
       acc.session_expires_utc
     )}`;
+    cookieStatusEl.classList.add("ok");
   } else {
-    cookieStatusEl.textContent = "Cookie не захвачены.";
+    cookieStatusEl.textContent = "● Cookie не захвачены";
+    cookieStatusEl.classList.add("warn");
   }
 }
 
 function newAccount() {
   selectedId = "__new__";
-  renderList();
+  renderTabs();
   renderForm();
   fName.focus();
 }
@@ -145,13 +153,16 @@ async function saveAccount(e: Event) {
   const input = {
     id: selectedId === "__new__" ? null : selectedId,
     display_name: fName.value.trim(),
-    email: fEmail.value.trim(),
-    email_url: fEmailUrl.value.trim(),
-    password: fPassword.value,
-    email_password: fEmailPassword.value,
   };
   try {
     const id = await invoke<string>("save_account", { input });
+    // время ресета — необязательное: задать, если ввели, иначе очистить
+    const r = computeReset(fReset.value);
+    if (r) {
+      await invoke("set_reset_time", { id, resetAt: r.reset_at, label: r.label });
+    } else {
+      await invoke("clear_reset_time", { id });
+    }
     selectedId = id;
     await refresh();
     toast("Сохранено");
@@ -163,7 +174,7 @@ async function saveAccount(e: Event) {
 async function deleteAccount() {
   if (!selectedId || selectedId === "__new__") return;
   const acc = accounts.find((a) => a.id === selectedId);
-  if (!confirm(`Удалить аккаунт «${acc?.display_name}»? Секреты тоже будут удалены.`)) return;
+  if (!confirm(`Удалить аккаунт «${acc?.display_name}»?`)) return;
   await invoke("delete_account", { id: selectedId });
   selectedId = null;
   await refresh();
@@ -185,158 +196,11 @@ async function captureAccount() {
   }
 }
 
-function initSettings() {
+window.addEventListener("DOMContentLoaded", () => {
   $("btn-new").onclick = newAccount;
+  $("btn-first").onclick = newAccount;
   $("btn-delete").onclick = deleteAccount;
   $("btn-capture").onclick = captureAccount;
   formEl.addEventListener("submit", saveAccount);
   refresh();
-}
-
-// ───────────────────── Режим промпта (#7 v2) ─────────────────────
-
-interface SwitchPrompt {
-  target_id: string;
-  target_name: string;
-  outgoing_id: string | null;
-  outgoing_name: string | null;
-  already_active: boolean;
-}
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-// «HH:MM» (локальное) → ближайшая будущая unix-метка + нормализованная подпись.
-function computeReset(timeStr: string): { reset_at: number; label: string } | null {
-  if (!timeStr) return null;
-  const [h, m] = timeStr.split(":").map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
-  return { reset_at: Math.floor(d.getTime() / 1000), label: `${pad(h)}:${pad(m)}` };
-}
-
-async function initPrompt() {
-  $("prompt-view").hidden = false;
-  const appEl = document.querySelector<HTMLElement>(".app");
-  if (appEl) appEl.hidden = true;
-
-  const titleEl = $("p-title");
-  const msgEl = $("p-msg");
-  const statusEl = $("p-status");
-  const timeRow = $("p-time-row");
-  const timeEl = $<HTMLInputElement>("p-time");
-  const primary = $<HTMLButtonElement>("p-primary");
-  const secondary = $<HTMLButtonElement>("p-secondary");
-  const win = getCurrentWindow();
-  const close = () => win.close();
-
-  let prompt: SwitchPrompt | null = await invoke<SwitchPrompt | null>("get_pending_prompt");
-  // существующие подписи ресета (для предзаполнения)
-  const labelById = new Map<string, string>();
-  for (const a of await invoke<AccountView[]>("list_accounts")) {
-    if (a.usage?.reset_label) labelById.set(a.id, a.usage.reset_label);
-  }
-
-  if (!prompt) {
-    close();
-    return;
-  }
-
-  // Шаг «после переключения»: задать время ресета целевого аккаунта.
-  function showSetReset(id: string, name: string, lead: string) {
-    titleEl.textContent = "Время ресета";
-    msgEl.textContent = `${lead} Когда сбрасывается лимит сессии «${name}»?`;
-    statusEl.textContent = "";
-    timeRow.hidden = false;
-    timeEl.value = labelById.get(id) ?? "";
-    primary.textContent = "Сохранить";
-    secondary.textContent = "Пропустить";
-    primary.disabled = false;
-    secondary.disabled = false;
-    primary.onclick = async () => {
-      const r = computeReset(timeEl.value);
-      if (r) await invoke("set_reset_time", { id, resetAt: r.reset_at, label: r.label });
-      close();
-    };
-    secondary.onclick = close;
-    timeEl.focus();
-  }
-
-  // Выполнить свап на целевой аккаунт, затем предложить его время ресета.
-  function runSwitch(p: SwitchPrompt) {
-    titleEl.textContent = "Переключение";
-    msgEl.textContent = `Переключаюсь на «${p.target_name}»…`;
-    timeRow.hidden = true;
-    statusEl.textContent = "Завершаю Claude…";
-    primary.disabled = true;
-    secondary.disabled = true;
-    invoke("switch_account", { id: p.target_id });
-  }
-
-  await listen<string>("switch-progress", (e) => {
-    statusEl.textContent = e.payload;
-  });
-  await listen<string>("switch-done", () => {
-    showSetReset(prompt!.target_id, prompt!.target_name, "Готово, сессия запущена.");
-  });
-  await listen<string>("switch-error", (e) => {
-    titleEl.textContent = "Не получилось";
-    msgEl.textContent = "Переключение не удалось.";
-    timeRow.hidden = true;
-    statusEl.textContent = String(e.payload);
-    primary.textContent = "Закрыть";
-    primary.disabled = false;
-    primary.onclick = close;
-    secondary.hidden = true;
-  });
-
-  // Перечитать запрос, если окно переиспользовали для нового переключения.
-  await listen("prompt-show", async () => {
-    const fresh = await invoke<SwitchPrompt | null>("get_pending_prompt");
-    if (fresh) {
-      prompt = fresh;
-      secondary.hidden = false;
-      route(fresh);
-    }
-  });
-
-  function route(p: SwitchPrompt) {
-    if (p.already_active) {
-      // целевой уже активен — свап не нужен, только задать его ресет
-      showSetReset(p.target_id, p.target_name, "Аккаунт уже активен.");
-    } else if (p.outgoing_id && p.outgoing_name) {
-      // шаг «до закрытия»: ресет уходящего, затем свап
-      const outId = p.outgoing_id;
-      titleEl.textContent = "Перед переключением";
-      msgEl.textContent = `Когда сбрасывается лимит у «${p.outgoing_name}»?`;
-      statusEl.textContent = "";
-      timeRow.hidden = false;
-      timeEl.value = labelById.get(outId) ?? "";
-      primary.textContent = "Сохранить и переключить";
-      secondary.textContent = "Переключить без времени";
-      primary.disabled = false;
-      secondary.disabled = false;
-      primary.onclick = async () => {
-        const r = computeReset(timeEl.value);
-        if (r) await invoke("set_reset_time", { id: outId, resetAt: r.reset_at, label: r.label });
-        runSwitch(p);
-      };
-      secondary.onclick = () => runSwitch(p);
-      timeEl.focus();
-    } else {
-      // активного нет — просто переключаемся, потом спросим ресет нового
-      runSwitch(p);
-    }
-  }
-
-  route(prompt);
-}
-
-window.addEventListener("DOMContentLoaded", () => {
-  if (location.hash === "#prompt") {
-    initPrompt();
-  } else {
-    initSettings();
-  }
 });

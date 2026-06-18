@@ -3,12 +3,12 @@
 //! Управляемое состояние — `Mutex<Store>`. Команды для фронта окна настроек,
 //! построение и обновление меню в баре, запуск переключения аккаунта.
 
-use crate::store::{Account, SecretKind, Store, UsageSnapshot};
+use crate::store::{Account, Store, UsageSnapshot};
 use crate::{capture, swap};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    menu::{MenuBuilder, MenuItemBuilder},
     AppHandle, Emitter, Manager,
 };
 
@@ -36,8 +36,6 @@ pub struct PendingPrompt(pub Mutex<Option<SwitchPrompt>>);
 pub struct AccountView {
     pub id: String,
     pub display_name: String,
-    pub email: String,
-    pub email_url: String,
     pub has_cookies: bool,
     pub session_expires_utc: Option<i64>,
     pub usage: Option<UsageSnapshot>,
@@ -49,8 +47,6 @@ fn to_view(a: &Account, active_id: Option<&str>) -> AccountView {
     AccountView {
         id: a.id.clone(),
         display_name: a.display_name.clone(),
-        email: a.email.clone(),
-        email_url: a.email_url.clone(),
         has_cookies: sk.is_some(),
         session_expires_utc: sk.map(|c| c.expires_utc),
         usage: a.usage.clone(),
@@ -76,10 +72,6 @@ pub fn list_accounts(state: tauri::State<AppState>) -> Vec<AccountView> {
 pub struct AccountInput {
     pub id: Option<String>,
     pub display_name: String,
-    pub email: String,
-    pub email_url: String,
-    pub password: Option<String>,
-    pub email_password: Option<String>,
 }
 
 #[tauri::command]
@@ -92,31 +84,14 @@ pub fn save_account(app: AppHandle, state: tauri::State<AppState>, input: Accoun
                 let existing = store.get(id).cloned();
                 let mut acc = existing.ok_or_else(|| "аккаунт не найден".to_string())?;
                 acc.display_name = input.display_name.clone();
-                acc.email = input.email.clone();
-                acc.email_url = input.email_url.clone();
                 store.update(acc);
                 id.clone()
             }
-            None => {
-                let acc = Account::new(
-                    input.display_name.clone(),
-                    input.email.clone(),
-                    input.email_url.clone(),
-                );
-                store.add(acc)
-            }
+            None => store.add(Account::new(input.display_name.clone())),
         };
         store.save().map_err(|e| e.to_string())?;
         id
     };
-
-    // секреты — в Keychain (только если переданы непустыми)
-    if let Some(p) = input.password.as_deref().filter(|s| !s.is_empty()) {
-        crate::store::set_secret(&id, SecretKind::Password, p).map_err(|e| e.to_string())?;
-    }
-    if let Some(p) = input.email_password.as_deref().filter(|s| !s.is_empty()) {
-        crate::store::set_secret(&id, SecretKind::EmailPassword, p).map_err(|e| e.to_string())?;
-    }
 
     refresh_tray(&app);
     Ok(id)
@@ -131,21 +106,6 @@ pub fn delete_account(app: AppHandle, state: tauri::State<AppState>, id: String)
     }
     refresh_tray(&app);
     Ok(())
-}
-
-/// Секреты аккаунта для предзаполнения формы редактирования.
-#[derive(Serialize)]
-pub struct AccountSecrets {
-    pub password: Option<String>,
-    pub email_password: Option<String>,
-}
-
-#[tauri::command]
-pub fn get_account_secrets(id: String) -> AccountSecrets {
-    AccountSecrets {
-        password: crate::store::get_secret(&id, SecretKind::Password).unwrap_or(None),
-        email_password: crate::store::get_secret(&id, SecretKind::EmailPassword).unwrap_or(None),
-    }
 }
 
 /// Захватить текущую сессию Claude и привязать к аккаунту (создав при отсутствии id).
@@ -194,6 +154,26 @@ pub fn set_reset_time(
         usage.reset_label = Some(label);
         usage.captured_at = crate::store::now_unix();
         acc.usage = Some(usage);
+        store.save().map_err(|e| e.to_string())?;
+    }
+    refresh_tray(&app);
+    Ok(())
+}
+
+/// Очистить заданное время ресета аккаунта.
+#[tauri::command]
+pub fn clear_reset_time(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    id: String,
+) -> Result<(), String> {
+    {
+        let mut store = state.0.lock().unwrap();
+        let acc = store.get_mut(&id).ok_or("аккаунт не найден")?;
+        if let Some(u) = acc.usage.as_mut() {
+            u.reset_at = None;
+            u.reset_label = None;
+        }
         store.save().map_err(|e| e.to_string())?;
     }
     refresh_tray(&app);
@@ -256,7 +236,7 @@ fn show_prompt_window(app: &AppHandle) {
         let _ = tauri::WebviewWindowBuilder::new(
             app,
             "prompt",
-            tauri::WebviewUrl::App("index.html#prompt".into()),
+            tauri::WebviewUrl::App("prompt.html".into()),
         )
         .title("cc-switcher — переключение")
         .inner_size(380.0, 300.0)
@@ -315,37 +295,46 @@ pub fn trigger_switch(app: AppHandle, id: String) {
 
 // ───────────────────────── Меню в баре ─────────────────────────
 
-/// Построить меню tray из текущего состояния.
+/// Построить меню tray: аккаунты сразу в корне (без подменю), отсортированы
+/// по времени сброса, формат «hh:mm – имя» (✓ у активного). Ниже — Настройки/Выйти.
 pub fn build_menu(app: &AppHandle, store: &Store) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let mut switch = SubmenuBuilder::new(app, "Переключиться");
+    let mut b = MenuBuilder::new(app);
+
     if store.accounts.is_empty() {
-        switch = switch.item(
+        b = b.item(
             &MenuItemBuilder::with_id("noop", "Нет аккаунтов")
                 .enabled(false)
                 .build(app)?,
         );
     } else {
-        for a in &store.accounts {
+        // сортировка по времени сброса (заданные раньше → выше, без времени → в конец)
+        let mut accs: Vec<&Account> = store.accounts.iter().collect();
+        accs.sort_by(|x, y| {
+            let kx = x.usage.as_ref().and_then(|u| u.reset_at);
+            let ky = y.usage.as_ref().and_then(|u| u.reset_at);
+            match (kx, ky) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => x.display_name.cmp(&y.display_name),
+            }
+        });
+        for a in accs {
             let active = store.active_id.as_deref() == Some(a.id.as_str());
-            let mark = if active { "✓ " } else { "   " };
-            let reset = reset_label(a)
-                .map(|l| format!("  ·  сброс {l}"))
-                .unwrap_or_default();
-            let label = format!("{mark}{}{reset}", a.display_name);
-            switch = switch.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
+            let mark = if active { "✓ " } else { "" };
+            let time = a.usage.as_ref().and_then(|u| u.reset_label.clone());
+            let label = match time {
+                Some(t) => format!("{mark}{t} – {}", a.display_name),
+                None => format!("{mark}{}", a.display_name),
+            };
+            b = b.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
         }
     }
-    let switch = switch.build()?;
 
     let settings = MenuItemBuilder::with_id("settings", "Настройки…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Выйти").build(app)?;
 
-    MenuBuilder::new(app)
-        .item(&switch)
-        .separator()
-        .item(&settings)
-        .item(&quit)
-        .build()
+    b.separator().item(&settings).item(&quit).build()
 }
 
 /// Подпись времени ресета аккаунта, если оно задано и ещё не наступило.
