@@ -1,6 +1,7 @@
-// Публичный API задействуют следующие задачи (#6 capture, #9 меню, #10 настройки).
+// Часть публичного API задействуют следующие задачи.
 #[allow(dead_code)]
 mod capture;
+mod commands;
 #[allow(dead_code)]
 mod cookies;
 #[allow(dead_code)]
@@ -8,11 +9,10 @@ mod store;
 #[allow(dead_code)]
 mod swap;
 
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    tray::TrayIconBuilder,
-    Manager,
-};
+use commands::AppState;
+use std::sync::Mutex;
+use store::Store;
+use tauri::{tray::TrayIconBuilder, Manager};
 
 /// Показать (создать при необходимости) окно настроек.
 fn show_settings(app: &tauri::AppHandle) {
@@ -23,48 +23,62 @@ fn show_settings(app: &tauri::AppHandle) {
     }
 }
 
-/// Построить иконку в меню-баре с меню.
+/// Построить иконку в меню-баре. Меню строится из состояния и обновляется
+/// командами через [`commands::refresh_tray`].
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    // Подменю «Переключиться» — пока заглушка, аккаунты добавит #9/#5.
-    let no_accounts = MenuItemBuilder::with_id("no_accounts", "Нет аккаунтов")
-        .enabled(false)
-        .build(app)?;
-    let switch = SubmenuBuilder::new(app, "Переключиться")
-        .item(&no_accounts)
-        .build()?;
-
-    let settings = MenuItemBuilder::with_id("settings", "Настройки…").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Выйти").build(app)?;
-
-    let menu = MenuBuilder::new(app)
-        .item(&switch)
-        .separator()
-        .item(&settings)
-        .item(&quit)
-        .build()?;
+    let menu = {
+        let state = app.state::<AppState>();
+        let store = state.0.lock().unwrap();
+        commands::build_menu(app, &store)?
+    };
 
     let tray = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "settings" => show_settings(app),
-            "quit" => app.exit(0),
-            _ => {}
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            match id {
+                "settings" => show_settings(app),
+                "quit" => app.exit(0),
+                other if other.starts_with("switch:") => {
+                    let account_id = other.trim_start_matches("switch:").to_string();
+                    commands::trigger_switch(app.clone(), account_id);
+                }
+                _ => {}
+            }
         })
         .build(app)?;
 
-    // Текст рядом с иконкой — заглушка, остаток сессии подставит #7.
     #[cfg(target_os = "macos")]
-    let _ = tray.set_title(Some("cc"));
+    {
+        let state = app.state::<AppState>();
+        let store = state.0.lock().unwrap();
+        let title = store
+            .active()
+            .map(|a| a.display_name.clone())
+            .unwrap_or_else(|| "cc".to_string());
+        let _ = tray.set_title(Some(title));
+    }
 
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let store = Store::load().unwrap_or_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(AppState(Mutex::new(store)))
+        .invoke_handler(tauri::generate_handler![
+            commands::list_accounts,
+            commands::save_account,
+            commands::delete_account,
+            commands::get_account_secrets,
+            commands::capture_account,
+            commands::switch_account,
+        ])
         .setup(|app| {
             // Жить только в меню-баре: убрать иконку из Dock.
             #[cfg(target_os = "macos")]
