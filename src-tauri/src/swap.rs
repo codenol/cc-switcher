@@ -137,7 +137,14 @@ fn cleanup_backups(pairs: &[(PathBuf, PathBuf)]) {
 ///
 /// `progress` вызывается на каждом этапе (для событий в UI). Claude должен быть
 /// закрыт по ходу выполнения — функция делает это сама.
-pub fn switch_to<F: Fn(Stage)>(cookies: &[SessionCookie], progress: F) -> Result<()> {
+///
+/// Возвращает **живую сессию уходящего аккаунта**, считанную из базы уже после
+/// корректного завершения Claude (когда Chromium сбросил cookie на диск) и до
+/// перезаписи. claude.ai ротирует `sessionKey` по мере использования, поэтому
+/// снимок аккаунта устаревает; вызывающий код должен сохранить эти cookie за
+/// уходящим аккаунтом, иначе при следующем переключении на него запишется
+/// протухший токен и сервер отвергнет сессию (экран Get started).
+pub fn switch_to<F: Fn(Stage)>(cookies: &[SessionCookie], progress: F) -> Result<Vec<SessionCookie>> {
     if cookies.is_empty() {
         bail!("нет cookie для переключения");
     }
@@ -148,6 +155,9 @@ pub fn switch_to<F: Fn(Stage)>(cookies: &[SessionCookie], progress: F) -> Result
 
     progress(Stage::Quitting);
     quit_claude(Duration::from_secs(10))?;
+
+    // Свежая сессия уходящего аккаунта (после flush на диск, до перезаписи).
+    let outgoing = cookies::read_session_cookies(&db).unwrap_or_default();
 
     progress(Stage::BackingUp);
     let backups = backup_cookies(&db)?;
@@ -165,7 +175,7 @@ pub fn switch_to<F: Fn(Stage)>(cookies: &[SessionCookie], progress: F) -> Result
     launch_claude()?;
 
     progress(Stage::Done);
-    Ok(())
+    Ok(outgoing)
 }
 
 #[cfg(test)]
