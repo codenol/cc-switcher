@@ -20,6 +20,9 @@ pub struct UsageSnapshot {
     pub percent_remaining: Option<f64>,
     /// Время сброса лимита, unix-секунды.
     pub reset_at: Option<i64>,
+    /// Подпись времени ресета как ввёл человек, например «20:30» (для показа).
+    #[serde(default)]
+    pub reset_label: Option<String>,
     /// Когда снят снимок, unix-секунды.
     pub captured_at: i64,
 }
@@ -268,6 +271,7 @@ mod tests {
             acc.usage = Some(UsageSnapshot {
                 percent_remaining: Some(43.0),
                 reset_at: Some(now_unix() + 3600),
+                reset_label: Some("20:30".into()),
                 captured_at: now_unix(),
             });
             assert!(reloaded.update(acc));

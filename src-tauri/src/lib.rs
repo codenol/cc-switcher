@@ -9,7 +9,7 @@ mod store;
 #[allow(dead_code)]
 mod swap;
 
-use commands::AppState;
+use commands::{AppState, PendingPrompt};
 use std::sync::Mutex;
 use store::Store;
 use tauri::{tray::TrayIconBuilder, Manager};
@@ -43,7 +43,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 "quit" => app.exit(0),
                 other if other.starts_with("switch:") => {
                     let account_id = other.trim_start_matches("switch:").to_string();
-                    commands::trigger_switch(app.clone(), account_id);
+                    commands::open_switch_prompt(app.clone(), account_id);
                 }
                 _ => {}
             }
@@ -71,6 +71,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState(Mutex::new(store)))
+        .manage(PendingPrompt(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             commands::list_accounts,
             commands::save_account,
@@ -78,6 +79,8 @@ pub fn run() {
             commands::get_account_secrets,
             commands::capture_account,
             commands::switch_account,
+            commands::set_reset_time,
+            commands::get_pending_prompt,
         ])
         .setup(|app| {
             // Жить только в меню-баре: убрать иконку из Dock.

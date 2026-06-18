@@ -9,6 +9,21 @@
   </head>
 
   <body>
+    <!-- Окно-промпт: ввод времени ресета вокруг переключения (#7 v2) -->
+    <div id="prompt-view" class="prompt" hidden>
+      <h1 id="p-title">Переключение</h1>
+      <p id="p-msg" class="p-msg"></p>
+      <label id="p-time-row" class="p-time-row">
+        Время ресета
+        <input id="p-time" type="time" />
+      </label>
+      <p id="p-status" class="p-status"></p>
+      <div class="p-actions">
+        <button id="p-secondary" type="button"></button>
+        <button id="p-primary" type="button" class="primary"></button>
+      </div>
+    </div>
+
     <div class="app">
       <!-- Список аккаунтов -->
       <aside class="sidebar">
