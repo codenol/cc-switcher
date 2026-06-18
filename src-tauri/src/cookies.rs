@@ -207,10 +207,21 @@ fn row_to_cookie(r: &rusqlite::Row) -> rusqlite::Result<SessionCookie> {
 /// Записать (UPSERT) cookie сессии в базу Claude. Блоб `encrypted_b64`
 /// пишется как есть — перешифровка не нужна (ключ машины общий).
 /// Claude должен быть закрыт. `value` хранится пустым — данные в `encrypted_value`.
+///
+/// Перед вставкой удаляются ВСЕ известные session-cookie домена ([`SESSION_COOKIE_NAMES`]),
+/// иначе cookie предыдущего аккаунта, которых нет у целевого (например `sessionKeyLC`),
+/// остаются в базе и ломают сессию — Claude бесконечно крутит на входе.
 pub fn write_session_cookies(db_path: &PathBuf, cookies: &[SessionCookie]) -> Result<()> {
     let mut conn = Connection::open(db_path)
         .with_context(|| format!("не удалось открыть на запись {}", db_path.display()))?;
     let tx = conn.transaction()?;
+    for name in SESSION_COOKIE_NAMES {
+        tx.execute(
+            "DELETE FROM cookies WHERE name = ?1 AND host_key = ?2",
+            params![name, HOST],
+        )
+        .with_context(|| format!("не удалось очистить старый cookie {name}"))?;
+    }
     for c in cookies {
         let enc = B64.decode(&c.encrypted_b64).context("encrypted_b64 не base64")?;
         tx.execute(
@@ -247,6 +258,85 @@ mod tests {
         let dec = decrypt(&enc, &key).unwrap();
         assert_eq!(dec, plaintext);
         assert_eq!(value_from_plaintext(&dec).unwrap(), "sk-ant-sid02-EXAMPLE-VALUE");
+    }
+
+    /// Создать минимальную таблицу cookies (нужные колонки) и вернуть соединение.
+    fn make_cookies_db(path: &PathBuf) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cookies (\
+                creation_utc INTEGER, host_key TEXT, top_frame_site_key TEXT, name TEXT, \
+                value TEXT, encrypted_value BLOB, path TEXT, expires_utc INTEGER, \
+                is_secure INTEGER, is_httponly INTEGER, last_access_utc INTEGER, \
+                has_expires INTEGER, is_persistent INTEGER, priority INTEGER, samesite INTEGER, \
+                source_scheme INTEGER, source_port INTEGER, last_update_utc INTEGER, \
+                source_type INTEGER, has_cross_site_ancestor INTEGER, \
+                PRIMARY KEY (host_key, top_frame_site_key, name, path, source_scheme, source_port));",
+        )
+        .unwrap();
+    }
+
+    fn fake_cookie(name: &str) -> SessionCookie {
+        SessionCookie {
+            name: name.into(),
+            encrypted_b64: B64.encode(format!("v10-{name}").as_bytes()),
+            creation_utc: 1,
+            host_key: HOST.into(),
+            top_frame_site_key: String::new(),
+            path: "/".into(),
+            expires_utc: 0,
+            is_secure: 1,
+            is_httponly: 1,
+            last_access_utc: 1,
+            has_expires: 1,
+            is_persistent: 1,
+            priority: 1,
+            samesite: 1,
+            source_scheme: 2,
+            source_port: 443,
+            last_update_utc: 1,
+            source_type: 0,
+            has_cross_site_ancestor: 1,
+        }
+    }
+
+    /// Переключение на аккаунт без `sessionKeyLC` не должно оставлять чужой
+    /// `sessionKeyLC` от предыдущего аккаунта (иначе вечный спиннер на входе).
+    #[test]
+    fn write_clears_stale_session_cookies() {
+        let dir = std::env::temp_dir().join(format!("cc-switcher-cookies-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("Cookies");
+        make_cookies_db(&db);
+
+        // Аккаунт A: полный набор из трёх cookie.
+        let a = vec![
+            fake_cookie("sessionKey"),
+            fake_cookie("sessionKeyLC"),
+            fake_cookie("lastActiveOrg"),
+        ];
+        write_session_cookies(&db, &a).unwrap();
+
+        // Аккаунт B: без sessionKeyLC.
+        let b = vec![fake_cookie("sessionKey"), fake_cookie("lastActiveOrg")];
+        write_session_cookies(&db, &b).unwrap();
+
+        let conn = Connection::open(&db).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM cookies WHERE name = 'sessionKeyLC' AND host_key = ?1",
+                params![HOST],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "протухший sessionKeyLC должен быть удалён при свапе");
+
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cookies", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "должны остаться ровно cookie аккаунта B");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Боевой тест на реальной базе и Keychain этой машины.
