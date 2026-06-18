@@ -15,6 +15,22 @@ use tauri::{
 /// Состояние приложения.
 pub struct AppState(pub Mutex<Store>);
 
+/// Запрос на ввод времени ресета вокруг переключения (окно-промпт).
+#[derive(Debug, Clone, Serialize)]
+pub struct SwitchPrompt {
+    /// На какой аккаунт переключаемся.
+    pub target_id: String,
+    pub target_name: String,
+    /// Уходящий (активный) аккаунт, если он есть и отличается от целевого.
+    pub outgoing_id: Option<String>,
+    pub outgoing_name: Option<String>,
+    /// Целевой аккаунт уже активен — свап не нужен, только задать его ресет.
+    pub already_active: bool,
+}
+
+/// Очередь из одного запроса на ввод времени ресета (читает окно-промпт).
+pub struct PendingPrompt(pub Mutex<Option<SwitchPrompt>>);
+
 /// Представление аккаунта для фронта — без cookie-блобов.
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountView {
@@ -157,12 +173,99 @@ pub fn capture_account(
     Ok(id)
 }
 
+// ───────────────────── Время ресета (ручной ввод) ─────────────────────
+
+/// Сохранить введённое человеком время ресета сессии аккаунта.
+/// `reset_at` — unix-секунды (фронт считает ближайшую будущую метку),
+/// `label` — подпись «HH:MM» для показа.
+#[tauri::command]
+pub fn set_reset_time(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    id: String,
+    reset_at: i64,
+    label: String,
+) -> Result<(), String> {
+    {
+        let mut store = state.0.lock().unwrap();
+        let acc = store.get_mut(&id).ok_or("аккаунт не найден")?;
+        let mut usage = acc.usage.clone().unwrap_or_default();
+        usage.reset_at = Some(reset_at);
+        usage.reset_label = Some(label);
+        usage.captured_at = crate::store::now_unix();
+        acc.usage = Some(usage);
+        store.save().map_err(|e| e.to_string())?;
+    }
+    refresh_tray(&app);
+    Ok(())
+}
+
+/// Прочитать (не очищая) запрос на ввод времени ресета для окна-промпта.
+#[tauri::command]
+pub fn get_pending_prompt(state: tauri::State<PendingPrompt>) -> Option<SwitchPrompt> {
+    state.0.lock().unwrap().clone()
+}
+
 // ───────────────────────── Переключение ─────────────────────────
 
 /// Запустить переключение на аккаунт в фоне (свап завершает Claude).
 #[tauri::command]
 pub fn switch_account(app: AppHandle, id: String) {
     trigger_switch(app, id);
+}
+
+/// Открыть окно-промпт ввода времени ресета вокруг переключения на `target_id`.
+/// Вызывается из меню tray вместо прямого свапа: само переключение и сохранение
+/// времени ресета оркеструет окно-промпт (см. фронт).
+pub fn open_switch_prompt(app: AppHandle, target_id: String) {
+    {
+        let state = app.state::<AppState>();
+        let store = state.0.lock().unwrap();
+        let Some(target) = store.get(&target_id) else {
+            return;
+        };
+        let already_active = store.active_id.as_deref() == Some(target_id.as_str());
+        let (outgoing_id, outgoing_name) = if already_active {
+            (None, None)
+        } else {
+            match store.active() {
+                Some(a) => (Some(a.id.clone()), Some(a.display_name.clone())),
+                None => (None, None),
+            }
+        };
+        let prompt = SwitchPrompt {
+            target_id: target_id.clone(),
+            target_name: target.display_name.clone(),
+            outgoing_id,
+            outgoing_name,
+            already_active,
+        };
+        let pending = app.state::<PendingPrompt>();
+        *pending.0.lock().unwrap() = Some(prompt);
+    }
+    show_prompt_window(&app);
+}
+
+/// Показать (создав при необходимости) окно-промпт и попросить его перечитать запрос.
+fn show_prompt_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("prompt") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = app.emit("prompt-show", ());
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "prompt",
+            tauri::WebviewUrl::App("index.html#prompt".into()),
+        )
+        .title("cc-switcher — переключение")
+        .inner_size(380.0, 300.0)
+        .min_inner_size(380.0, 300.0)
+        .resizable(false)
+        .always_on_top(true)
+        .center()
+        .build();
+    }
 }
 
 /// Внутренний запуск свапа (используется и из меню tray, и из команды).
@@ -225,7 +328,10 @@ pub fn build_menu(app: &AppHandle, store: &Store) -> tauri::Result<tauri::menu::
         for a in &store.accounts {
             let active = store.active_id.as_deref() == Some(a.id.as_str());
             let mark = if active { "✓ " } else { "   " };
-            let label = format!("{mark}{}", a.display_name);
+            let reset = reset_label(a)
+                .map(|l| format!("  ·  сброс {l}"))
+                .unwrap_or_default();
+            let label = format!("{mark}{}{reset}", a.display_name);
             switch = switch.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
         }
     }
@@ -242,12 +348,23 @@ pub fn build_menu(app: &AppHandle, store: &Store) -> tauri::Result<tauri::menu::
         .build()
 }
 
-/// Заголовок tray: имя активного аккаунта (или «cc»).
+/// Подпись времени ресета аккаунта, если оно задано и ещё не наступило.
+fn reset_label(a: &Account) -> Option<String> {
+    let u = a.usage.as_ref()?;
+    let at = u.reset_at?;
+    let label = u.reset_label.as_ref()?;
+    (at > crate::store::now_unix()).then(|| label.clone())
+}
+
+/// Заголовок tray: имя активного аккаунта и его время ресета (или «cc»).
 fn tray_title(store: &Store) -> String {
-    store
-        .active()
-        .map(|a| a.display_name.clone())
-        .unwrap_or_else(|| "cc".to_string())
+    match store.active() {
+        Some(a) => match reset_label(a) {
+            Some(l) => format!("{} · {}", a.display_name, l),
+            None => a.display_name.clone(),
+        },
+        None => "cc".to_string(),
+    }
 }
 
 /// Перестроить меню и заголовок tray из состояния.
