@@ -256,7 +256,7 @@ fn show_prompt_window(app: &AppHandle) {
         let _ = tauri::WebviewWindowBuilder::new(
             app,
             "prompt",
-            tauri::WebviewUrl::App("index.html#prompt".into()),
+            tauri::WebviewUrl::App("prompt.html".into()),
         )
         .title("cc-switcher — переключение")
         .inner_size(380.0, 300.0)
