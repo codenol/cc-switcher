@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:app": "tauri build",
+    "dmg": "bash scripts/package-dmg.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
