@@ -8,7 +8,7 @@ use crate::{capture, swap};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    menu::{MenuBuilder, MenuItemBuilder},
     AppHandle, Emitter, Manager,
 };
 
@@ -160,6 +160,26 @@ pub fn set_reset_time(
     Ok(())
 }
 
+/// Очистить заданное время ресета аккаунта.
+#[tauri::command]
+pub fn clear_reset_time(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    id: String,
+) -> Result<(), String> {
+    {
+        let mut store = state.0.lock().unwrap();
+        let acc = store.get_mut(&id).ok_or("аккаунт не найден")?;
+        if let Some(u) = acc.usage.as_mut() {
+            u.reset_at = None;
+            u.reset_label = None;
+        }
+        store.save().map_err(|e| e.to_string())?;
+    }
+    refresh_tray(&app);
+    Ok(())
+}
+
 /// Прочитать (не очищая) запрос на ввод времени ресета для окна-промпта.
 #[tauri::command]
 pub fn get_pending_prompt(state: tauri::State<PendingPrompt>) -> Option<SwitchPrompt> {
@@ -275,37 +295,46 @@ pub fn trigger_switch(app: AppHandle, id: String) {
 
 // ───────────────────────── Меню в баре ─────────────────────────
 
-/// Построить меню tray из текущего состояния.
+/// Построить меню tray: аккаунты сразу в корне (без подменю), отсортированы
+/// по времени сброса, формат «hh:mm – имя» (✓ у активного). Ниже — Настройки/Выйти.
 pub fn build_menu(app: &AppHandle, store: &Store) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let mut switch = SubmenuBuilder::new(app, "Переключиться");
+    let mut b = MenuBuilder::new(app);
+
     if store.accounts.is_empty() {
-        switch = switch.item(
+        b = b.item(
             &MenuItemBuilder::with_id("noop", "Нет аккаунтов")
                 .enabled(false)
                 .build(app)?,
         );
     } else {
-        for a in &store.accounts {
+        // сортировка по времени сброса (заданные раньше → выше, без времени → в конец)
+        let mut accs: Vec<&Account> = store.accounts.iter().collect();
+        accs.sort_by(|x, y| {
+            let kx = x.usage.as_ref().and_then(|u| u.reset_at);
+            let ky = y.usage.as_ref().and_then(|u| u.reset_at);
+            match (kx, ky) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => x.display_name.cmp(&y.display_name),
+            }
+        });
+        for a in accs {
             let active = store.active_id.as_deref() == Some(a.id.as_str());
-            let mark = if active { "✓ " } else { "   " };
-            let reset = reset_label(a)
-                .map(|l| format!("  ·  сброс {l}"))
-                .unwrap_or_default();
-            let label = format!("{mark}{}{reset}", a.display_name);
-            switch = switch.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
+            let mark = if active { "✓ " } else { "" };
+            let time = a.usage.as_ref().and_then(|u| u.reset_label.clone());
+            let label = match time {
+                Some(t) => format!("{mark}{t} – {}", a.display_name),
+                None => format!("{mark}{}", a.display_name),
+            };
+            b = b.item(&MenuItemBuilder::with_id(format!("switch:{}", a.id), label).build(app)?);
         }
     }
-    let switch = switch.build()?;
 
     let settings = MenuItemBuilder::with_id("settings", "Настройки…").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Выйти").build(app)?;
 
-    MenuBuilder::new(app)
-        .item(&switch)
-        .separator()
-        .item(&settings)
-        .item(&quit)
-        .build()
+    b.separator().item(&settings).item(&quit).build()
 }
 
 /// Подпись времени ресета аккаунта, если оно задано и ещё не наступило.

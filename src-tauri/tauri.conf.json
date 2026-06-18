@@ -16,9 +16,9 @@
         "label": "settings",
         "title": "cc-switcher — Настройки",
         "width": 520,
-        "height": 320,
+        "height": 380,
         "minWidth": 440,
-        "minHeight": 280,
+        "minHeight": 320,
         "visible": false,
         "resizable": true
       }

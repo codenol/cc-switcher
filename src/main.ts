@@ -31,6 +31,19 @@ const activeBadgeEl = $("active-badge");
 const hintEl = $("form-hint");
 
 const fName = $<HTMLInputElement>("f-name");
+const fReset = $<HTMLInputElement>("f-reset");
+
+// «HH:MM» (локальное) → ближайшая будущая unix-метка + нормализованная подпись.
+function computeReset(timeStr: string): { reset_at: number; label: string } | null {
+  if (!timeStr) return null;
+  const [h, m] = timeStr.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return { reset_at: Math.floor(d.getTime() / 1000), label: `${pad(h)}:${pad(m)}` };
+}
 
 function toast(msg: string) {
   const el = $("toast");
@@ -107,6 +120,7 @@ function renderForm() {
   hintEl.textContent = "";
 
   fName.value = acc?.display_name ?? "";
+  fReset.value = acc?.usage?.reset_label ?? ""; // необязательное
 
   // бейдж активности в Claude
   activeBadgeEl.hidden = !acc?.is_active;
@@ -142,6 +156,13 @@ async function saveAccount(e: Event) {
   };
   try {
     const id = await invoke<string>("save_account", { input });
+    // время ресета — необязательное: задать, если ввели, иначе очистить
+    const r = computeReset(fReset.value);
+    if (r) {
+      await invoke("set_reset_time", { id, resetAt: r.reset_at, label: r.label });
+    } else {
+      await invoke("clear_reset_time", { id });
+    }
     selectedId = id;
     await refresh();
     toast("Сохранено");

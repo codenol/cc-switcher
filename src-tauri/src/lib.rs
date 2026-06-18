@@ -79,6 +79,7 @@ pub fn run() {
             commands::capture_account,
             commands::switch_account,
             commands::set_reset_time,
+            commands::clear_reset_time,
             commands::get_pending_prompt,
         ])
         .setup(|app| {
